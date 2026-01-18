@@ -26,8 +26,19 @@ func VerifyVTE(
 	}
 
 	// 3. Check Context Hash
-	if !bytes.Equal(pkg.CtxHash[:], expectedCtxHash[:]) {
+	if len(pkg.CtxHash) != 32 {
+		return fmt.Errorf("invalid ctx_hash length: %d", len(pkg.CtxHash))
+	}
+	if !bytes.Equal(pkg.CtxHash, expectedCtxHash[:]) {
 		return fmt.Errorf("ctx hash mismatch: have %x, want %x", pkg.CtxHash, expectedCtxHash)
+	}
+
+	// Structural Validation
+	if len(pkg.C) != 32 {
+		return fmt.Errorf("invalid C length: %d", len(pkg.C))
+	}
+	if len(pkg.R2Compressed) != 33 {
+		return fmt.Errorf("invalid R2Compressed length: %d", len(pkg.R2Compressed))
 	}
 
 	// 4. Parse Capsule and Verify Integrity
