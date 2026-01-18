@@ -2,7 +2,6 @@ package vte
 
 import (
 	"bytes"
-	"encoding/hex"
 	"errors"
 	"fmt"
 )
@@ -21,7 +20,7 @@ type VTEPackage struct {
 	Round           uint64
 	NetworkID       NetworkID
 	Capsule         []byte
-	CapsuleChecksum []byte // BLAKE3(Capsule)
+	CapsuleChecksum []byte       // BLAKE3(Capsule)
 	CipherFields    CipherFields // Parsed fields bindable to proof
 	CtxHash         [32]byte
 	C               [32]byte // Commitment Poseidon(DST, r2, ctx)
