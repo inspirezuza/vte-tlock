@@ -2,6 +2,8 @@ import type { Metadata } from 'next';
 import { Inter } from 'next/font/google';
 import './globals.css';
 import Script from 'next/script'; // Use Next.js Script for async loading
+import ThemeRegistry from '@/components/ThemeRegistry';
+import Navbar from '@/components/Navbar';
 
 const inter = Inter({ subsets: ['latin'] })
 
@@ -18,8 +20,11 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <body className={inter.className} suppressHydrationWarning>
-        <Script src="/wasm_exec.js" strategy="beforeInteractive" />
-        {children}
+        <ThemeRegistry>
+          <Script src="/wasm_exec.js" strategy="beforeInteractive" />
+          <Navbar />
+          {children}
+        </ThemeRegistry>
       </body>
     </html>
   )
