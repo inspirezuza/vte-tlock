@@ -21,7 +21,7 @@ export default function RootLayout({
     <html lang="en" suppressHydrationWarning>
       <body className={inter.className} suppressHydrationWarning>
         <ThemeRegistry>
-          <Script src="/wasm_exec.js" strategy="beforeInteractive" />
+          <Script src="/wasm/wasm_exec.js" strategy="beforeInteractive" />
           <Navbar />
           {children}
         </ThemeRegistry>
