@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+
+	"vte-tlock/circuits/commitment"
 )
 
 // GenerateVTEParams contains all inputs needed to generate a VTEPackage.
@@ -15,10 +17,11 @@ type GenerateVTEParams struct {
 	R2             []byte // 32-byte secret scalar
 	CtxHash        []byte // 32-byte context hash
 	DrandEndpoints []string
+	GenerateProof  bool // Whether to generate ZK proof (expensive, ~1.5s)
 }
 
 // GenerateVTE creates a VTEPackage from the provided parameters.
-// This uses REAL tlock encryption (no more mocks).
+// This uses REAL tlock encryption and optionally generates ZK proofs.
 func GenerateVTE(params *GenerateVTEParams) (*VTEPackage, error) {
 	if len(params.R2) != 32 {
 		return nil, fmt.Errorf("R2 secret must be 32 bytes")
@@ -62,16 +65,30 @@ func GenerateVTE(params *GenerateVTEParams) (*VTEPackage, error) {
 	pkg.R2Compressed = compressed
 	pkg.R2Pub = r2Pub
 
-	// 4. REAL COMMITMENT: C = SHA256(DST, r2, ctx_hash)
-	// NOTE: Using enhanced SHA256 instead of Poseidon due to dependency issues
-	commitment, err := ComputeCommitment(params.R2, params.CtxHash)
+	// 4. REAL COMMITMENT: C = MiMC(DST, r2, ctx_hash)
+	// Using MiMC for ZK circuit compatibility
+	commitmentBytes, err := commitment.ComputeCommitmentHash(params.R2, params.CtxHash)
 	if err != nil {
 		return nil, fmt.Errorf("failed to compute commitment: %w", err)
 	}
-	pkg.C = commitment
+	pkg.C = commitmentBytes
 
-	// 5. Proofs are empty (optional - can be generated offline)
-	pkg.ProofSECP = []byte{}
+	// 5. Generate ZK Proof (optional but recommended for verifiability)
+	if params.GenerateProof {
+		proofResult, err := commitment.Prove(nil, &commitment.WitnessInput{
+			R2:      params.R2,
+			CtxHash: params.CtxHash,
+			C:       commitmentBytes,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("ZK proof generation failed: %w", err)
+		}
+		pkg.ProofSECP = proofResult.Proof
+	} else {
+		pkg.ProofSECP = []byte{} // Empty if not generating
+	}
+
+	// 6. TLE proof is empty (full IBE proof not implemented yet)
 	pkg.ProofTLE = []byte{}
 
 	return pkg, nil

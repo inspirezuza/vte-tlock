@@ -75,8 +75,8 @@ func TestGenerateVTERealEncryption(t *testing.T) {
 		t.Fatal("Expected real capsule, got empty")
 	}
 
-	if len(pkg.CipherFields.U) == 0 {
-		t.Fatal("Expected parsed cipher fields, got empty")
+	if len(pkg.CipherFields.EphemeralPubKey) == 0 {
+		t.Fatal("Expected parsed cipher fields, got empty EphemeralPubKey")
 	}
 
 	t.Logf("Generated VTE package with %d byte capsule", len(pkg.Capsule))

@@ -35,16 +35,19 @@ func (c *Circuit) Define(api frontend.API) error {
 	// ... (Range checks implicit in conversion)
 
 	// 2. Commitment Verification
-	dstBytes := [32]byte{}
-	copy(dstBytes[:], []byte("VTE_TLOCK_v0.2.1"))
-	dstHi := new(big.Int).SetBytes(dstBytes[:16])
-	dstLo := new(big.Int).SetBytes(dstBytes[16:])
+	// DST: "VTE_TLOCK_v0.2.1" (16 bytes)
+	// Split into 8-byte limbs to fit in BN254 scalar field (which is ~254 bits)
+	// 8 bytes = 64 bits, safely fits in native field
+	dstBytes := []byte("VTE_TLOCK_v0.2.1")        // 16 bytes
+	dst0 := new(big.Int).SetBytes(dstBytes[0:8])  // First 8 bytes
+	dst1 := new(big.Int).SetBytes(dstBytes[8:16]) // Last 8 bytes
 
 	p, err := poseidon2.NewMerkleDamgardHasher(api)
 	if err != nil {
 		return err
 	}
-	p.Write(dstHi, dstLo, c.SimR2Hi, c.SimR2Lo, c.CtxHi, c.CtxLo)
+	// Hash: dst0, dst1, r2_hi, r2_lo, ctx_hi, ctx_lo
+	p.Write(dst0, dst1, c.SimR2Hi, c.SimR2Lo, c.CtxHi, c.CtxLo)
 	cCalc := p.Sum()
 
 	api.AssertIsEqual(cCalc, c.C)

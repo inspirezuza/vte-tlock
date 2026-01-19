@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"vte-tlock/circuits/commitment"
 )
 
 // ProofStrategy defines which proving backend to use for TLE proofs
@@ -21,8 +23,8 @@ const (
 type GenerateVTEOptions struct {
 	Params       *GenerateVTEParams
 	TLEStrategy  ProofStrategy
-	EnableSECPZK bool // If false, skip SECP proving (faster mock mode)
-	EnableTLEZK  bool // If false, skip TLE proving (faster mock mode)
+	EnableSECPZK bool // If true, generate commitment ZK proof
+	EnableTLEZK  bool // If false, skip TLE proving (not yet implemented)
 	TimeoutSECP  time.Duration
 	TimeoutTLE   time.Duration
 }
@@ -42,39 +44,19 @@ func GenerateVTEWithProofs(ctx context.Context, opts *GenerateVTEOptions) (*VTEP
 		opts.TimeoutTLE = 12 * time.Minute // 10min + buffer
 	}
 
-	// Step 1: Generate base package structure
+	// Set GenerateProof in params based on options
+	opts.Params.GenerateProof = opts.EnableSECPZK
+
+	// Step 1: Generate base package structure (includes proof if enabled)
 	pkg, err := GenerateVTE(opts.Params)
 	if err != nil {
 		return nil, fmt.Errorf("base package generation failed: %w", err)
 	}
 
-	// Step 2: Parallel proof generation
+	// Step 2: Parallel TLE proof generation (not yet implemented)
 	var wg sync.WaitGroup
-	errChan := make(chan error, 2)
+	errChan := make(chan error, 1)
 
-	// SECP Proof (optional - can be generated offline)
-	if opts.EnableSECPZK {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-
-			secpCtx, cancel := context.WithTimeout(ctx, opts.TimeoutSECP)
-			defer cancel()
-
-			// TODO: Implement real SECP circuit prover
-			// For now, proofs remain empty
-			select {
-			case <-secpCtx.Done():
-				errChan <- fmt.Errorf("SECP proving timed out")
-				return
-			default:
-				// Real implementation would call SECP prover here
-				// pkg.ProofSECP would be populated with actual proof
-			}
-		}()
-	}
-
-	// TLE Proof (optional - can be generated offline)
 	if opts.EnableTLEZK {
 		wg.Add(1)
 		go func() {
@@ -110,6 +92,29 @@ func GenerateVTEWithProofs(ctx context.Context, opts *GenerateVTEOptions) (*VTEP
 	return pkg, nil
 }
 
+// VerifyCommitmentProof verifies the ZK proof that proves knowledge of r2
+// This can be verified BEFORE the timelock expires!
+func VerifyCommitmentProof(pkg *VTEPackage) error {
+	if len(pkg.ProofSECP) == 0 {
+		return fmt.Errorf("no commitment proof found in package")
+	}
+
+	// Create witness input from public data
+	input := &commitment.WitnessInput{
+		R2:      nil, // Secret - not needed for verification
+		CtxHash: pkg.CtxHash,
+		C:       pkg.C,
+	}
+
+	// Verify the Groth16 proof
+	err := commitment.Verify(nil, pkg.ProofSECP, input)
+	if err != nil {
+		return fmt.Errorf("commitment proof verification failed: %w", err)
+	}
+
+	return nil
+}
+
 // DecryptResult contains the result of decryption
 type DecryptResult struct {
 	R2         []byte
@@ -126,8 +131,8 @@ func DecryptVTE(ctx context.Context, pkg *VTEPackage) (*DecryptResult, error) {
 		return nil, fmt.Errorf("decryption failed: %w", err)
 	}
 
-	// Verify REAL commitment
-	expectedC, err := ComputeCommitment(r2, pkg.CtxHash)
+	// Verify commitment using MiMC (matching GenerateVTE)
+	expectedC, err := commitment.ComputeCommitmentHash(r2, pkg.CtxHash)
 	if err != nil {
 		return nil, fmt.Errorf("commitment computation failed: %w", err)
 	}
