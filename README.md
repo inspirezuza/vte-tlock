@@ -1,4 +1,4 @@
-# VTE-TLock v0.3.0
+# VTE-TLock v0.2.0 (Schema vte-tlock/0.2)
 
 **Verifiable Time-Locked Encryption** using drand and Zero-Knowledge Proofs
 
@@ -11,8 +11,9 @@ A cryptographic system for time-locked encryption with verifiable computation. E
 VTE-TLock enables **trustless time-locked encryption**:
 - 🔒 **Encrypt** a secret so it cannot be decrypted until a future time
 - ⏰ **Calendar picker** - select unlock date/time with minute-level precision  
-- ✅ **Verifiable** with cryptographic commitments and ZK proofs
+- ✅ **Verifiable** with cryptographic commitments and ZK proofs (Schema V2)
 - 🌐 **Browser-based** with Go WASM backend (no server required)
+- 🛡️ **Trustless Verification**: Policy-driven checks ensuring package integrity without trusting package metadata.
 
 ### Use Cases
 - **Atomic Swaps**: Lock refund transactions until swap completes
@@ -32,19 +33,19 @@ VTE-TLock enables **trustless time-locked encryption**:
 
 ```bash
 # 1. Clone repository
-git clone https://github.com/yourusername/vte-tlock.git
+git clone https://github.com/inspirezuza/vte-tlock.git
 cd vte-tlock
 
 # 2. Install dependencies
 go mod download
 cd web && npm install
 
-# 3. Build WASM binary
+# 3. Build WASM binary (V2)
 cd cmd/wasm
 # Windows PowerShell:
-$env:GOOS='js'; $env:GOARCH='wasm'; go build -o ../../public/wasm/vte_tlock.wasm .
+$env:GOOS='js'; $env:GOARCH='wasm'; go build -o ../../public/wasm/vte_tlock_v2.wasm .
 # Linux/Mac:
-# GOOS=js GOARCH=wasm go build -o ../../public/wasm/vte_tlock.wasm .
+# GOOS=js GOARCH=wasm go build -o ../../public/wasm/vte_tlock_v2.wasm .
 
 # 4. Start dev server
 cd ../..
@@ -58,34 +59,27 @@ Open browser: **http://localhost:3000**
 ## 📖 How to Use
 
 ### 1. Generate VTE Package
-
 1. **Navigate to** http://localhost:3000/generate
 2. **Step 1 - Context Mapping**: Enter session ID and refund TX (hex)
-3. **Step 2 - Network Configuration**:
-   - 📅 **Select unlock time** using calendar picker (1-60 minute precision)
-   - System auto-computes target drand round
-   - *Advanced mode*: Manual round entry for devs/auditors
+3. **Step 2 - Network Configuration**: Select unlock time (auto-computes round)
 4. **Step 3 - Secret**: Enter plaintext message or generate random r2
-5. **Step 4 - Generate**: Click "Generate & Prove" → get JSON package
+5. **Step 4 - Generate**: Click "Generate & Prove" → get `vte-tlock/0.2` JSON package
 
 ### 2. Verify VTE Package
-
 1. **Navigate to** http://localhost:3000/verify
 2. **Paste** your VTE package JSON
-3. **Click** "Verify & Audit Package"
-4. **Review** audit results:
-   - ✅ Structural integrity
-   - ✅ Network binding (chain hash, round)
-   - ✅ Capsule binding (R2 point, commitment)
-   - ✅ ZK Proof verification
+3. **Configure Policy**: Verify against expected Chain Hash, Round, Session ID, and Refund TX.
+4. **Click** "Verify & Audit Package"
+   - ✅ **Structural Integrity**: Validates V2 schema
+   - ✅ **Policy Check**: Ensures packet matches your expected context
+   - ✅ **Cryptographic Binding**: Verifies ZK proofs bind ciphertext to context
 
 ### 3. Decrypt VTE Package
-
 1. **Navigate to** http://localhost:3000/decrypt
 2. **Paste** your VTE package JSON
-3. **Wait** for unlock time (countdown shown)
-4. **Click** "Fetch Beacon & Decrypt" after unlock
-5. **View** decrypted plaintext
+3. **Provide Endpoints**: Enter trusted Drand API endpoints (e.g. `https://api.drand.sh`) - *Security Feature: Endpoints are not trusted from package*
+4. **Wait** for unlock time
+5. **Click** "Fetch Beacon & Decrypt" after unlock
 
 ---
 
@@ -93,15 +87,13 @@ Open browser: **http://localhost:3000**
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| **Calendar DateTime Picker** | ✅ | Select unlock time with 1-minute precision |
-| **Auto Round Computation** | ✅ | Computed from drand chain params |
+| **VTE Schema V2** | ✅ | Self-contained, deterministic context binding |
+| **Trustless Verification** | ✅ | Verifier provides policy/context facts |
 | **TLock Encryption** | ✅ | Real IBE encryption via drand |
-| **TLock Decryption** | ✅ | Fetches beacon post-unlock |
+| **TLock Decryption** | ✅ | Requires external endpoints for security |
 | **ZK Proof Generation** | ✅ | Groth16 MiMC commitment proof |
 | **ZK Proof Verification** | ✅ | Verify before unlock time |
-| **Plaintext Mode** | ✅ | SHA256(plaintext) → r2 |
-| **secp256k1 Points** | ✅ | Real ECC: R2 = r2 × G |
-| **MiMC Commitments** | ✅ | ZK-friendly hash |
+| **WASM Worker** | ✅ | Non-blocking cryptographic operations |
 
 ---
 
@@ -110,57 +102,43 @@ Open browser: **http://localhost:3000**
 ```
 vte-tlock/
 ├── circuits/                    # ZK circuits
-│   ├── commitment/             # ✅ MiMC commitment (661 constraints)
+│   ├── commitment/             # ✅ MiMC commitment
 │   └── secp/                   # SECP256k1 circuit
 │
 ├── pkg/vte/                    # Go backend core
-│   ├── package.go              # VTE generation + ZK proof
-│   ├── crypto.go               # secp256k1, commitments
-│   ├── tlock.go                # TLock encryption (native)
-│   ├── tlock_wasm.go           # TLock with JS pre-fetch
-│   ├── decrypt.go              # TLock decryption
-│   └── verify.go               # Package verification
+│   ├── package.go              # VTE V2 generation
+│   ├── types.go                # V2 Schema Definitions
+│   ├── verify.go               # Trustless verification logic
+│   └── tlock.go                # TLock encryption
 │
 ├── web/                        # Next.js frontend
-│   ├── app/                    # Pages (dashboard, generate, verify, decrypt)
-│   ├── components/             # React components (Generator, Verifier, etc.)
-│   ├── workers/vte.worker.ts   # WASM worker + drand pre-fetch
+│   ├── workers/vte.worker.ts   # WASM worker (handles V2 args)
 │   ├── lib/vte/client.ts       # TypeScript WASM client
-│   └── cmd/wasm/main.go        # WASM bindings
+│   └── cmd/wasm/main.go        # V2 WASM bindings
 ```
 
 ---
 
-## 🔬 Technical Details
+## 🔬 Technical Details (Schema V2)
 
-### Drand Network (Quicknet)
-- **Chain Hash**: `52db9ba70e0cc0f6eaf7803dd07447a1f5477735fd3f661792ba94600c84e971`
-- **Period**: 3 seconds per round
-- **Endpoint**: https://api.drand.sh
-
-### Round Calculation
+### Context Binding
+The verification context is cryptographically bound to the proofs using a holistic hash:
+```go
+CtxHash = SHA256(
+    "VTE_CTX_V2" || 
+    ChainHash || 
+    Round || 
+    CapsuleHash || 
+    SessionID || 
+    RefundTx
+)
 ```
-target_round = ceil((unlock_timestamp - genesis_time) / period)
-```
+This ensures that the proofs are valid ONLY for the specific ciphertext and context parameters.
 
-### WASM Architecture
-The WASM module uses JavaScript pre-fetching for all network requests to avoid blocking:
-1. Worker fetches chain info & beacon via `fetch()` API
-2. Passes JSON to WASM as string parameters
-3. WASM processes locally without network calls
-
----
-
-## 🐛 Troubleshooting
-
-### "Failed to fetch chain params"
-- Check internet connection
-- Verify drand endpoint is reachable
-- Try alternative: https://drand.cloudflare.com
-
-### "Verification failed"
-- Ensure package was generated with current version
-- Check chain hash matches network
+### Trust Architecture
+- **Generation**: Produces a self-contained package with all necessary proofs.
+- **Verification**: Does NOT trust the package for critical parameters (Round, Chain). The Verifier MUST supply these "expected" values.
+- **Decryption**: Does NOT use endpoints from the package (preventing malicious redirections). The user MUST supply trusted Drand endpoints.
 
 ---
 
