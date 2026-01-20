@@ -86,7 +86,7 @@ export default function Dashboard() {
 
             <Grid container spacing={4} sx={{ mb: 6 }}>
                 {/* Generate */}
-                <Grid item xs={12} md={4}>
+                <Grid size={{ xs: 12, md: 4 }}>
                     <Card sx={{ 
                         height: '100%', 
                         display: 'flex', 
@@ -125,7 +125,7 @@ export default function Dashboard() {
                 </Grid>
 
                 {/* Verify */}
-                <Grid item xs={12} md={4}>
+                <Grid size={{ xs: 12, md: 4 }}>
                     <Card sx={{ 
                         height: '100%', 
                         display: 'flex', 
@@ -164,7 +164,7 @@ export default function Dashboard() {
                 </Grid>
 
                 {/* Decrypt */}
-                <Grid item xs={12} md={4}>
+                <Grid size={{ xs: 12, md: 4 }}>
                     <Card sx={{ 
                         height: '100%', 
                         display: 'flex', 
@@ -211,7 +211,7 @@ export default function Dashboard() {
                 </Typography>
                 <Divider sx={{ my: 2 }} />
                 <Grid container spacing={3}>
-                    <Grid item xs={12} md={6}>
+                    <Grid size={{ xs: 12, md: 6 }}>
                         <Box>
                             <Typography variant="h6" gutterBottom color="primary">💱 Atomic Swaps</Typography>
                             <Typography variant="body2" color="text.secondary">
@@ -220,7 +220,7 @@ export default function Dashboard() {
                             </Typography>
                         </Box>
                     </Grid>
-                    <Grid item xs={12} md={6}>
+                    <Grid size={{ xs: 12, md: 6 }}>
                         <Box>
                             <Typography variant="h6" gutterBottom color="primary">🎯 Sealed-Bid Auctions</Typography>
                             <Typography variant="body2" color="text.secondary">
@@ -229,7 +229,7 @@ export default function Dashboard() {
                             </Typography>
                         </Box>
                     </Grid>
-                    <Grid item xs={12} md={6}>
+                    <Grid size={{ xs: 12, md: 6 }}>
                         <Box>
                             <Typography variant="h6" gutterBottom color="primary">🔐 Secret Sharing</Typography>
                             <Typography variant="body2" color="text.secondary">
@@ -238,7 +238,7 @@ export default function Dashboard() {
                             </Typography>
                         </Box>
                     </Grid>
-                    <Grid item xs={12} md={6}>
+                    <Grid size={{ xs: 12, md: 6 }}>
                         <Box>
                             <Typography variant="h6" gutterBottom color="primary">⚖️ Fair Protocols</Typography>
                             <Typography variant="body2" color="text.secondary">

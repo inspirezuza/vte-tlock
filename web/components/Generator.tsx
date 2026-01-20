@@ -1,7 +1,7 @@
 
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
     Box,
     Stepper,
@@ -18,14 +18,29 @@ import {
     Chip,
     IconButton,
     Tooltip,
-    Paper
+    Paper,
+    Collapse
 } from '@mui/material';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import AutoFixHighIcon from '@mui/icons-material/AutoFixHigh';
 import VerifiedUserIcon from '@mui/icons-material/VerifiedUser';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import ExpandLessIcon from '@mui/icons-material/ExpandLess';
+import { DateTimePicker } from '@mui/x-date-pickers/DateTimePicker';
+import { LocalizationProvider } from '@mui/x-date-pickers/LocalizationProvider';
+import { AdapterDayjs } from '@mui/x-date-pickers/AdapterDayjs';
+import dayjs, { Dayjs } from 'dayjs';
 import vteClient from '@/lib/vte/client';
 
 const steps = ['Context Mapping', 'Network Configuration', 'Secret Generation', 'Generate VTE'];
+
+// Chain params interface
+interface ChainParams {
+    genesis_time: number;  // Unix timestamp (seconds)
+    period: number;        // Seconds between rounds
+    public_key: string;
+    hash: string;
+}
 
 export default function Generator() {
     const [activeStep, setActiveStep] = useState(0);
@@ -40,23 +55,103 @@ export default function Generator() {
     const [ctxHash, setCtxHash] = useState('');
 
     // Step 2: Network
-    const [round, setRound] = useState('1000');
-    const [chainHash, setChainHash] = useState('8990e7a9aaed2f2b79c43d7890f5a77042845c088af85050f28a25c13e53625f');
+    const [chainHash, setChainHash] = useState('52db9ba70e0cc0f6eaf7803dd07447a1f5477735fd3f661792ba94600c84e971');
     const [endpoints, setEndpoints] = useState(['https://api.drand.sh']);
     const [strategy, setStrategy] = useState<'gnark' | 'zkvm' | 'auto'>('auto');
     
-    // Time-based unlock
-    const [useTime, setUseTime] = useState(true); // Use time instead of raw round
-    const [unlockTime, setUnlockTime] = useState(''); // ISO datetime-local format
-    const [duration, setDuration] = useState('60'); // Minutes from now
+    // Chain params (fetched from drand)
+    const [chainParams, setChainParams] = useState<ChainParams | null>(null);
+    const [chainParamsLoading, setChainParamsLoading] = useState(false);
+    const [chainParamsError, setChainParamsError] = useState('');
+    const [currentRound, setCurrentRound] = useState<number | null>(null);
+    
+    // Time-based unlock (new calendar approach)
+    const [unlockDateTime, setUnlockDateTime] = useState<Dayjs | null>(null); // Dayjs object for DateTimePicker
+    const [computedRound, setComputedRound] = useState<number | null>(null);
+    const [showAdvanced, setShowAdvanced] = useState(false);
+    const [manualRound, setManualRound] = useState(''); // For advanced mode
+    const [timeError, setTimeError] = useState('');
+    const initialDateTimeSetRef = useRef(false); // Track if we've set initial datetime
 
     // Step 3: Secret
     const [r2, setR2] = useState('');
-    const [plaintextMode, setPlaintextMode] = useState(true); // New: use plaintext instead of hex
+    const [R2, setR2Public] = useState(''); // R2 = r2 * G (public key)
+    const [plaintextMode, setPlaintextMode] = useState(true);
     const [plaintextSecret, setPlaintextSecret] = useState('');
 
     // Step 4: Final
     const [vtePackage, setVtePackage] = useState<any>(null);
+
+    // Fetch chain params on mount and when chainHash changes
+    const fetchChainParams = useCallback(async () => {
+        if (!chainHash) return;
+        
+        setChainParamsLoading(true);
+        setChainParamsError('');
+        
+        try {
+            const endpoint = endpoints[0] || 'https://api.drand.sh';
+            const proxyUrl = typeof window !== 'undefined' 
+                ? `${window.location.origin}/api/drand` 
+                : endpoint;
+            
+            // Fetch chain info
+            const infoResp = await fetch(`${proxyUrl}/${chainHash}/info`);
+            if (!infoResp.ok) throw new Error(`Failed to fetch chain info: ${infoResp.status}`);
+            const info: ChainParams = await infoResp.json();
+            setChainParams(info);
+            
+            // Fetch latest round
+            const latestResp = await fetch(`${proxyUrl}/${chainHash}/public/latest`);
+            if (latestResp.ok) {
+                const latest = await latestResp.json();
+                setCurrentRound(latest.round);
+            }
+            
+            // Set default unlock time to 5 minutes from now (only on first load)
+            if (!initialDateTimeSetRef.current) {
+                initialDateTimeSetRef.current = true;
+                setUnlockDateTime(dayjs().add(5, 'minute'));
+            }
+            
+        } catch (e: any) {
+            setChainParamsError(e.message);
+        } finally {
+            setChainParamsLoading(false);
+        }
+    }, [chainHash, endpoints]);
+
+    // Compute round from unlock datetime
+    useEffect(() => {
+        if (!chainParams || !unlockDateTime) {
+            setComputedRound(null);
+            return;
+        }
+        
+        const unlockTimestamp = unlockDateTime.unix(); // Dayjs unix() returns seconds
+        const now = dayjs().unix();
+        
+        // Validate: not in past
+        if (unlockTimestamp < now) {
+            setTimeError('Unlock time cannot be in the past');
+            setComputedRound(null);
+            return;
+        }
+        
+        // Validate: minimum lead time (2 periods)
+        const minLeadTime = 2 * chainParams.period;
+        if (unlockTimestamp - now < minLeadTime) {
+            setTimeError(`Minimum lead time is ${minLeadTime} seconds (~${Math.ceil(minLeadTime/60)} min)`);
+            // Still compute but show warning
+        } else {
+            setTimeError('');
+        }
+        
+        // Compute target round: ceil((unlock_time - genesis_time) / period)
+        const targetRound = Math.ceil((unlockTimestamp - chainParams.genesis_time) / chainParams.period);
+        setComputedRound(targetRound);
+        
+    }, [chainParams, unlockDateTime]);
 
     useEffect(() => {
         setMounted(true);
@@ -64,6 +159,13 @@ export default function Generator() {
             .then(() => setIsWasmLoaded(true))
             .catch(console.error);
     }, []);
+    
+    // Fetch chain params when component mounts
+    useEffect(() => {
+        if (mounted) {
+            fetchChainParams();
+        }
+    }, [mounted, fetchChainParams]);
 
     if (!mounted) return null;
 
@@ -72,18 +174,19 @@ export default function Generator() {
         try {
             if (activeStep === 0) {
                 // Compute CtxHash
-                const hash = await vteClient.computeCtxHash(sessionId, refundTx);
-                if (hash.error) throw new Error(hash.error);
-                setCtxHash(hash);
+                // V2: CtxHash now depends on CapsuleHash (randomized encryption), 
+                // so we cannot pre-compute it until generation.
+                // We'll set a placeholder or skip it.
+                setCtxHash('[Generated during encryption]');
             }
-            if (activeStep === 1 && useTime) {
-                // Calculate round from duration (minutes from now)
-                // Quicknet: 3 second rounds, 20 rounds per minute
-                const minutesFromNow = parseInt(duration);
-                const roundsToAdd = minutesFromNow * 20; // 3s per round = 20 rounds/min
-                const currentRound = 1000; // Mock current round
-                const targetRound = currentRound + roundsToAdd;
-                setRound(targetRound.toString());
+            if (activeStep === 1) {
+                // Validate unlock time is set
+                if (!showAdvanced && !computedRound) {
+                    throw new Error("Please select a valid unlock time");
+                }
+                if (showAdvanced && !manualRound) {
+                    throw new Error("Please enter a target round");
+                }
             }
             if (activeStep === 2) {
                 // Convert plaintext to hex r2 if needed
@@ -110,11 +213,23 @@ export default function Generator() {
         setActiveStep((prev) => prev - 1);
     };
 
-    const generateRandomR2 = () => {
+    const generateRandomR2 = async () => {
         const bytes = new Uint8Array(32);
         window.crypto.getRandomValues(bytes);
         const hex = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
         setR2(hex);
+        
+        // Compute R2 public key from r2 scalar
+        if (isWasmLoaded) {
+            try {
+                const result = await vteClient.computeR2Point(hex);
+                if (result.R2) {
+                    setR2Public(result.R2);
+                }
+            } catch (e) {
+                console.error('Failed to compute R2:', e);
+            }
+        }
     };
 
     const handleGenerateVTE = async () => {
@@ -122,21 +237,46 @@ export default function Generator() {
         setError('');
         try {
             const formatId = "tlock_v1_age_pairing"; // Standard for v0.2.1-age
+            // Prepare endpoints
+            const endpointList = endpoints; // `endpoints` is already an array
+            let activeEndpoints = endpointList;
+            
+            // Use Proxy if in browser and targeting api.drand.sh
+            if (typeof window !== 'undefined') {
+                const proxyUrl = window.location.origin + '/api/drand';
+                const needsProxy = endpointList.some(ep => ep.includes('api.drand.sh'));
+                
+                if (needsProxy) {
+                    activeEndpoints = endpointList.map(ep => {
+                        if (ep.includes('api.drand.sh')) return proxyUrl;
+                        return ep;
+                    });
+                }
+            }
+
+            // Determine target round
+            const targetRound = showAdvanced ? parseInt(manualRound) : computedRound!;
+
             const res = await vteClient.generateVTE({
-                round: parseInt(round),
+                round: targetRound,
                 chainHash,
-                formatId,
-                r2,
-                ctxHash,
-                endpoints,
-                strategy
+                formatId: 'tlock_v1_age_pairing',
+                r2: r2,
+                refundTxHex: refundTx,
+                sessionId: sessionId,
+                endpoints: activeEndpoints,
+                // canonicalEndpoints removed
+                strategy: strategy
             });
+            if (!res) throw new Error("No response from VTE worker");
             if (res.error) throw new Error(res.error);
             
-            // Add plaintext hint if using plaintext mode
+            // Add metadata
             if (plaintextMode && plaintextSecret) {
                 res.plaintext_hint = plaintextSecret;
-                res.unlock_minutes = parseInt(duration);
+            }
+            if (unlockDateTime) {
+                res.unlock_time_utc = unlockDateTime.toISOString();
             }
             
             setVtePackage(res);
@@ -177,66 +317,123 @@ export default function Generator() {
                 return (
                     <Stack spacing={3} sx={{ mt: 2 }}>
                         <Typography variant="body2" color="text.secondary">
-                            Configure the drand network, target round, and ZK proving strategy.
+                            Configure when the secret will be unlocked. The system will compute the target drand round.
                         </Typography>
-                        <TextField
-                            label="Target Round"
-                            type="number"
-                            fullWidth
-                            value={round}
-                            onChange={(e) => setRound(e.target.value)}
-                        />
-                        <TextField
-                            label="Chain Hash (Hex)"
-                            fullWidth
-                            value={chainHash}
-                            onChange={(e) => setChainHash(e.target.value)}
-                        />
-                        <TextField
-                            label="Endpoints (Comma separated)"
-                            fullWidth
-                            value={endpoints.join(', ')}
-                            onChange={(e) => setEndpoints(e.target.value.split(',').map(s => s.trim()))}
-                        />
                         
+                        {/* Chain params loading/error */}
+                        {chainParamsLoading && (
+                            <Alert severity="info" icon={<CircularProgress size={16} />}>
+                                Fetching drand chain parameters...
+                            </Alert>
+                        )}
+                        {chainParamsError && (
+                            <Alert severity="error">
+                                Failed to fetch chain params: {chainParamsError}
+                            </Alert>
+                        )}
+                        
+                        {/* Unlock Time Picker */}
                         <Box>
                             <Typography variant="subtitle2" gutterBottom>Unlock Time</Typography>
-                            <Stack direction="row" spacing={1} sx={{ mb: 2 }}>
-                                <Chip 
-                                    label="Duration (Easy)" 
-                                    color={useTime ? 'primary' : 'default'}
-                                    onClick={() => setUseTime(true)}
-                                    variant={useTime ? 'filled' : 'outlined'}
+                            <LocalizationProvider dateAdapter={AdapterDayjs}>
+                                <DateTimePicker
+                                    label="Unlock at"
+                                    value={unlockDateTime}
+                                    onChange={(newValue) => setUnlockDateTime(newValue)}
+                                    disabled={showAdvanced}
+                                    minDateTime={dayjs()}
+                                    timeSteps={{ minutes: 1 }}
+                                    slotProps={{
+                                        textField: {
+                                            fullWidth: true,
+                                            helperText: timeError || "Click calendar icon to select date & time",
+                                            error: !!timeError && timeError.includes('past')
+                                        }
+                                    }}
                                 />
-                                <Chip 
-                                    label="Round Number" 
-                                    color={!useTime ? 'primary' : 'default'}
-                                    onClick={() => setUseTime(false)}
-                                    variant={!useTime ? 'filled' : 'outlined'}
-                                />
-                            </Stack>
-                            
-                            {useTime ? (
-                                <TextField
-                                    label="Unlock in (minutes)"
-                                    type="number"
-                                    fullWidth
-                                    value={duration}
-                                    onChange={(e) => setDuration(e.target.value)}
-                                    helperText="Secret will be revealed after this many minutes"
-                                />
-                            ) : (
-                                <TextField
-                                    label="Target Round"
-                                    type="number"
-                                    fullWidth
-                                    value={round}
-                                    onChange={(e) => setRound(e.target.value)}
-                                    helperText="Advanced: Specify exact drand round number"
-                                />
-                            )}
+                            </LocalizationProvider>
                         </Box>
                         
+                        {/* Preview Section */}
+                        {chainParams && computedRound && !showAdvanced && (
+                            <Paper sx={{ p: 2, bgcolor: 'rgba(0,200,255,0.05)', border: '1px solid rgba(0,200,255,0.2)' }}>
+                                <Typography variant="subtitle2" color="primary" gutterBottom>
+                                    📅 Unlock Preview
+                                </Typography>
+                                <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: 1, alignItems: 'center' }}>
+                                    <Typography variant="caption" color="text.secondary">Unlock Time (UTC):</Typography>
+                                    <Typography variant="body2" fontFamily="monospace">
+                                        {unlockDateTime?.toDate().toUTCString()}
+                                    </Typography>
+                                    
+                                    <Typography variant="caption" color="text.secondary">Computed Round:</Typography>
+                                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                        <Typography variant="body2" fontFamily="monospace" fontWeight="bold" color="primary">
+                                            {computedRound.toLocaleString()}
+                                        </Typography>
+                                        <Tooltip title="Copy round">
+                                            <IconButton size="small" onClick={() => navigator.clipboard.writeText(computedRound.toString())}>
+                                                <ContentCopyIcon fontSize="small" />
+                                            </IconButton>
+                                        </Tooltip>
+                                    </Box>
+                                    
+                                    {currentRound && (
+                                        <>
+                                            <Typography variant="caption" color="text.secondary">Current Round:</Typography>
+                                            <Typography variant="body2" fontFamily="monospace" color="text.secondary">
+                                                ~{currentRound.toLocaleString()}
+                                            </Typography>
+                                        </>
+                                    )}
+                                    
+                                    <Typography variant="caption" color="text.secondary">Period:</Typography>
+                                    <Typography variant="body2" fontFamily="monospace" color="text.secondary">
+                                        {chainParams.period}s per round
+                                    </Typography>
+                                </Box>
+                            </Paper>
+                        )}
+                        
+                        {/* Advanced Toggle */}
+                        <Box>
+                            <Button
+                                size="small"
+                                onClick={() => setShowAdvanced(!showAdvanced)}
+                                endIcon={showAdvanced ? <ExpandLessIcon /> : <ExpandMoreIcon />}
+                                sx={{ textTransform: 'none' }}
+                            >
+                                Advanced (manual round)
+                            </Button>
+                            <Collapse in={showAdvanced}>
+                                <Stack spacing={2} sx={{ mt: 2, pl: 2, borderLeft: '2px solid rgba(255,255,255,0.1)' }}>
+                                    <TextField
+                                        label="Target Round (manual)"
+                                        type="number"
+                                        fullWidth
+                                        value={manualRound}
+                                        onChange={(e) => setManualRound(e.target.value)}
+                                        helperText="For devs/auditors: specify exact drand round number"
+                                    />
+                                    <TextField
+                                        label="Chain Hash (Hex)"
+                                        fullWidth
+                                        size="small"
+                                        value={chainHash}
+                                        onChange={(e) => setChainHash(e.target.value)}
+                                    />
+                                    <TextField
+                                        label="Endpoints (Comma separated)"
+                                        fullWidth
+                                        size="small"
+                                        value={endpoints.join(', ')}
+                                        onChange={(e) => setEndpoints(e.target.value.split(',').map(s => s.trim()))}
+                                    />
+                                </Stack>
+                            </Collapse>
+                        </Box>
+                        
+                        {/* Proof Strategy */}
                         <Box>
                             <Typography variant="subtitle2" gutterBottom>Proof Strategy</Typography>
                             <Stack direction="row" spacing={1}>
@@ -320,6 +517,26 @@ export default function Generator() {
                             </Box>
                         )}
                         
+                        {/* Show r2 (private) and R2 (public) results */}
+                        {!plaintextMode && r2 && (
+                            <Stack spacing={1}>
+                                <Alert severity="warning" variant="outlined" sx={{ wordBreak: 'break-all' }}>
+                                    <strong>r2 (Private Scalar):</strong> {r2.substring(0, 16)}...{r2.substring(r2.length - 8)}
+                                    <Typography variant="caption" display="block" color="text.secondary">
+                                        Keep this secret! This is your 32-byte private key.
+                                    </Typography>
+                                </Alert>
+                                {R2 && (
+                                    <Alert severity="success" variant="outlined" sx={{ wordBreak: 'break-all' }}>
+                                        <strong>R2 (Public Key):</strong> {R2}
+                                        <Typography variant="caption" display="block" color="text.secondary">
+                                            R2 = r2 × G (secp256k1 point, 33 bytes compressed)
+                                        </Typography>
+                                    </Alert>
+                                )}
+                            </Stack>
+                        )}
+                        
                         {ctxHash && (
                             <Alert severity="info" variant="outlined">
                                 CtxHash computed: {ctxHash.substring(0, 16)}...
@@ -335,14 +552,18 @@ export default function Generator() {
                         </Typography>
                         <Paper sx={{ p: 2, bgcolor: 'background.default', border: '1px solid rgba(255,255,255,0.05)' }}>
                             <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: 1 }}>
-                                {useTime && (
+                                {!showAdvanced && unlockDateTime && (
                                     <>
-                                        <Typography variant="caption" color="primary">Unlock In:</Typography>
-                                        <Typography variant="caption">{duration} minutes</Typography>
+                                        <Typography variant="caption" color="primary">Unlock Time:</Typography>
+                                        <Typography variant="caption" fontFamily="monospace">
+                                            {unlockDateTime?.toDate().toUTCString()}
+                                        </Typography>
                                     </>
                                 )}
                                 <Typography variant="caption" color="primary">Round:</Typography>
-                                <Typography variant="caption">{round}</Typography>
+                                <Typography variant="caption" fontFamily="monospace">
+                                    {showAdvanced ? manualRound : computedRound || 'Not set'}
+                                </Typography>
                                 {plaintextMode && (
                                     <>
                                         <Typography variant="caption" color="primary">Secret:</Typography>
@@ -351,6 +572,11 @@ export default function Generator() {
                                         </Typography>
                                     </>
                                 )}
+                                {/* Show R2 (public key) in review */}
+                                <Typography variant="caption" color="primary">R2 (Public Key):</Typography>
+                                <Typography variant="caption" sx={{ wordBreak: 'break-all', fontFamily: 'monospace', fontSize: '0.7rem' }}>
+                                    {R2 ? R2 : 'Not computed'}
+                                </Typography>
                                 <Typography variant="caption" color="primary">CtxHash:</Typography>
                                 <Typography variant="caption" sx={{ wordBreak: 'break-all' }}>{ctxHash}</Typography>
                             </Box>

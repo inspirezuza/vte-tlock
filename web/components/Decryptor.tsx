@@ -31,16 +31,31 @@ export default function Decryptor() {
 
     if (!mounted) return null;
 
+    const [endpoints, setEndpoints] = useState('https://api.drand.sh');
+
     const handleDecrypt = async () => {
         setDecrypting(true);
         setResult(null);
 
         try {
-            // Parse package
-            const pkg = JSON.parse(vtePackage);
-            
+            // Prepare endpoints array
+            let endpointList = endpoints.split(',').map(e => e.trim()).filter(e => e.length > 0);
+            if (endpointList.length === 0) {
+                endpointList = ['https://api.drand.sh'];
+            }
+
+            // Use Proxy if in browser to avoid CORS
+            if (typeof window !== 'undefined') {
+                const proxyUrl = window.location.origin + '/api/drand';
+                endpointList = endpointList.map(ep => {
+                    if (ep.includes('api.drand.sh')) return proxyUrl;
+                    return ep;
+                });
+            }
+
             // Call REAL decryption via WASM
-            const decryptResult = await vteClient.decrypt(vtePackage);
+            // Pass the JSON string directly. WASM now parses V2.
+            const decryptResult = await vteClient.decrypt(vtePackage, endpointList);
             
             if (decryptResult.error) {
                 throw new Error(decryptResult.error);
@@ -75,14 +90,18 @@ export default function Decryptor() {
 
     const loadSample = () => {
         const sample = {
-            "round": 1000,
-            "network_id": {
-                "chain_hash": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
-                "tlock_version": "v1.0.0",
-                "ciphertext_format_id": "tlock_v1_age_pairing"
+            "version": "vte-tlock/0.2",
+            "tlock": {
+                "round": 1000,
+                "drand_chain_hash": "52db9ba70e0cc0f6eaf7803dd07447a1f5477735fd3f661792ba94600c84e971",
+                "ciphertext_format_id": "tlock_v1_age_pairing",
+                "capsule": "mock_encrypted_capsule",
+                "capsule_hash": "mock_hash"
             },
-            "capsule": "mock_encrypted_capsule",
-            "plaintext_hint": "Hello from the future!"
+            "context": { "schema": "ctx_v2", "session_id": "demo", "refund_tx_hex": "00" },
+            "public": { "commitment": "" },
+            "proofs": {},
+            "meta": { "plaintext_hint": "Hello from the future!" }
         };
         setVtePackage(JSON.stringify(sample, null, 2));
     };
@@ -115,6 +134,14 @@ export default function Decryptor() {
                             value={vtePackage}
                             onChange={(e) => setVtePackage(e.target.value)}
                             sx={{ '& .MuiInputBase-root': { fontFamily: 'monospace', fontSize: '0.85rem' } }}
+                        />
+
+                        <TextField
+                            label="Drand Endpoints (comma separated)"
+                            fullWidth
+                            value={endpoints}
+                            onChange={(e) => setEndpoints(e.target.value)}
+                            helperText="Defaults to https://api.drand.sh"
                         />
 
                         <Button

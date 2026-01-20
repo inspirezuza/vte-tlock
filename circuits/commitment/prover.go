@@ -37,10 +37,9 @@ var (
 	keysMutex  sync.Mutex
 )
 
-// DST is the domain separation tag for commitment
-const DSTValue = "12345678901234567890"
-
-// Setup performs trusted setup for commitment circuit (cached)
+// Setup loads the embedded proving keys or generates new ones if not available
+// IMPORTANT: For production, always use embedded keys from the same trusted setup
+// to ensure proofs verify correctly
 func Setup() (*ProvingKeys, error) {
 	keysMutex.Lock()
 	defer keysMutex.Unlock()
@@ -49,6 +48,51 @@ func Setup() (*ProvingKeys, error) {
 		return cachedKeys, nil
 	}
 
+	// Try to load embedded keys first (from trusted setup)
+	if len(EmbeddedPK) > 0 && len(EmbeddedVK) > 0 {
+		return loadEmbeddedKeys()
+	}
+
+	// Fallback: generate new keys (only for development when keys don't exist yet)
+	return generateNewKeys()
+}
+
+// loadEmbeddedKeys loads the pre-generated proving and verifying keys
+func loadEmbeddedKeys() (*ProvingKeys, error) {
+	// Compile circuit (needed for constraint system)
+	var c Circuit
+	ccs, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, &c)
+	if err != nil {
+		return nil, fmt.Errorf("circuit compilation failed: %w", err)
+	}
+
+	// Load embedded PK
+	pk := groth16.NewProvingKey(ecc.BN254)
+	_, err = pk.ReadFrom(bytes.NewReader(EmbeddedPK))
+	if err != nil {
+		return nil, fmt.Errorf("failed to load embedded PK: %w", err)
+	}
+
+	// Load embedded VK
+	vk := groth16.NewVerifyingKey(ecc.BN254)
+	_, err = vk.ReadFrom(bytes.NewReader(EmbeddedVK))
+	if err != nil {
+		return nil, fmt.Errorf("failed to load embedded VK: %w", err)
+	}
+
+	cachedKeys = &ProvingKeys{
+		PK:  pk,
+		VK:  vk,
+		CCS: ccs,
+	}
+
+	return cachedKeys, nil
+}
+
+// generateNewKeys generates new proving and verifying keys
+// WARNING: This should only be used during development
+// For production, run genkey first and use embedded keys
+func generateNewKeys() (*ProvingKeys, error) {
 	var c Circuit
 
 	// Compile circuit
@@ -72,6 +116,9 @@ func Setup() (*ProvingKeys, error) {
 	return cachedKeys, nil
 }
 
+// DST is the domain separation tag for commitment (SHA256 of "VTE_COMMIT_V2")
+const DSTValue = "22834383894294698501250269098734612248590623067142646399676774643038477038930"
+
 // WitnessInput contains the values for proof generation
 type WitnessInput struct {
 	// Secret witness: r2 scalar (32 bytes, big-endian)
@@ -82,19 +129,27 @@ type WitnessInput struct {
 	C       []byte // 32 bytes (commitment)
 }
 
-// ComputeCommitmentHash computes C = MiMC(DST, r2, ctx_hash)
+// ComputeCommitmentHash computes C = MiMC(DST, r2_hi, r2_lo, ctx_hash)
 // This must match what the circuit computes
 func ComputeCommitmentHash(r2, ctxHash []byte) ([]byte, error) {
 	// Convert to field elements
-	var r2Fe, ctxFe, dstFe fr.Element
-	r2Fe.SetBytes(r2)
+	var r2Hi, r2Lo, ctxFe, dstFe fr.Element
 	ctxFe.SetBytes(ctxHash)
 	dstFe.SetString(DSTValue)
+
+	// Split r2 into two 128-bit limbs
+	// r2 is 32 bytes. High 16 bytes -> r2Hi, Low 16 bytes -> r2Lo
+	if len(r2) != 32 {
+		return nil, fmt.Errorf("r2 must be 32 bytes")
+	}
+	r2Hi.SetBytes(r2[:16])
+	r2Lo.SetBytes(r2[16:])
 
 	// Compute MiMC hash
 	h := mimc.NewMiMC()
 	h.Write(dstFe.Marshal())
-	h.Write(r2Fe.Marshal())
+	h.Write(r2Hi.Marshal())
+	h.Write(r2Lo.Marshal())
 	h.Write(ctxFe.Marshal())
 
 	return h.Sum(nil), nil
@@ -116,8 +171,13 @@ func Prove(keys *ProvingKeys, input *WitnessInput) (*ProverResult, error) {
 
 	result.Constraints = keys.CCS.GetNbConstraints()
 
-	// Convert inputs to field elements
-	r2BigInt := new(big.Int).SetBytes(input.R2)
+	// Convert inputs to field elements and split limbs
+	if len(input.R2) != 32 {
+		return nil, fmt.Errorf("R2 must be 32 bytes")
+	}
+	r2HiBigInt := new(big.Int).SetBytes(input.R2[:16])
+	r2LoBigInt := new(big.Int).SetBytes(input.R2[16:])
+
 	ctxBigInt := new(big.Int).SetBytes(input.CtxHash)
 	cBigInt := new(big.Int).SetBytes(input.C)
 
@@ -125,7 +185,8 @@ func Prove(keys *ProvingKeys, input *WitnessInput) (*ProverResult, error) {
 	witness := &Circuit{
 		CtxHash: ctxBigInt,
 		C:       cBigInt,
-		R2:      r2BigInt,
+		R2Hi:    r2HiBigInt,
+		R2Lo:    r2LoBigInt,
 	}
 
 	// Create full witness

@@ -29,7 +29,8 @@ self.onmessage = async (e: MessageEvent) => {
                 // @ts-ignore
                 go = new self.Go();
                 const origin = self.location.origin;
-                const response = await fetch(`${origin}/wasm/vte_tlock.wasm`);
+                // Load v2 WASM to bypass file locks and cache
+                const response = await fetch(`${origin}/wasm/vte_tlock_v2.wasm?v=${Date.now()}`);
                 if (!response.ok) throw new Error(`Fetch failed: ${response.status} ${response.statusText}`);
                 
                 const buffer = await response.arrayBuffer();
@@ -56,15 +57,36 @@ self.onmessage = async (e: MessageEvent) => {
             }
             case 'GENERATE_VTE': {
                 if (!wasmReady) throw new Error("WASM not initialized");
+                
+                // Pre-fetch chain info from drand API (in JS to avoid WASM deadlock)
+                // NOTE: For ENCRYPTION, we only need chain info (public key), NOT the beacon!
+                const endpoint = payload.endpoints[0] || 'https://api.drand.sh';
+                const chainHash = payload.chainHash;
+                
+                // Fetch chain info only
+                const infoUrl = `${endpoint}/${chainHash}/info`;
+                const infoResp = await fetch(infoUrl);
+                if (!infoResp.ok) {
+                    throw new Error(`Failed to fetch chain info: ${infoResp.status}`);
+                }
+                const chainInfoJSON = await infoResp.text();
+                
+                // No beacon needed for encryption - it's for future rounds!
+                const beaconSignatureHex = ''; 
+                
                 // @ts-ignore
                 const res = self.generateVTE(
                     payload.round,
                     payload.chainHash,
                     payload.formatId,
                     payload.r2,
-                    payload.ctxHash,
+                    payload.refundTxHex, 
+                    payload.sessionId,
                     payload.endpoints,
-                    payload.strategy || 'auto'
+                    payload.strategy || 'auto',
+                    // payload.canonicalEndpoints || [], // Removed in V2
+                    chainInfoJSON,
+                    beaconSignatureHex
                 );
                 if (typeof res === 'string') {
                     self.postMessage({ id, type: 'OK', payload: JSON.parse(res) });
@@ -76,7 +98,14 @@ self.onmessage = async (e: MessageEvent) => {
             case 'COMPUTE_CTX_HASH': {
                 if (!wasmReady) throw new Error("WASM not initialized");
                 // @ts-ignore
-                const hash = self.computeCtxHash(payload.sessionId, payload.refundTx);
+                // V2 requires full context params: sessionID, refundTxHex, chainHashHex, round, capsuleHashHex
+                const hash = self.computeCtxHash(
+                    payload.sessionId, 
+                    payload.refundTx,
+                    payload.chainHash,
+                    payload.round,
+                    payload.capsuleHash
+                );
                 self.postMessage({ id, type: 'OK', payload: hash });
                 break;
             }
@@ -84,7 +113,8 @@ self.onmessage = async (e: MessageEvent) => {
             case 'DECRYPT_VTE': {
                 if (!wasmReady) throw new Error("WASM not initialized");
                 // @ts-ignore
-                const result = self.decryptVTE(payload.packageJSON);
+                // V2 requires endpoints provided by caller
+                const result = self.decryptVTE(payload.packageJSON, payload.endpoints);
                 if (result.error) {
                     self.postMessage({ id, type: 'ERR', error: result.error });
                 } else {
@@ -100,8 +130,16 @@ self.onmessage = async (e: MessageEvent) => {
                     payload.round,
                     payload.chainHash,
                     payload.formatId,
-                    payload.ctxHash
+                    payload.sessionId, // Binding check
+                    payload.refundTxHex
                 );
+                self.postMessage({ id, type: 'OK', payload: res });
+                break;
+            }
+            case 'COMPUTE_R2_POINT': {
+                if (!wasmReady) throw new Error("WASM not initialized");
+                // @ts-ignore
+                const res = self.computeR2Point(payload.r2Hex);
                 self.postMessage({ id, type: 'OK', payload: res });
                 break;
             }

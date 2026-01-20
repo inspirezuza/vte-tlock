@@ -11,6 +11,17 @@ import (
 	"filippo.io/age/armor"
 )
 
+var ErrFormatMismatch = fmt.Errorf("ciphertext format ID mismatch")
+
+// CipherFields represents the parsed components of the ciphertext.
+type CipherFields struct {
+	// For "tlock_v1_age_pairing"
+	EphemeralPubKey []byte
+	Mask            []byte
+	Tag             []byte
+	Ciphertext      []byte
+}
+
 // ParseCapsule extracts the binding fields from the capsule based on the format ID.
 // This is critical for Proof_TLE binding.
 func ParseCapsule(capsule []byte, formatID string) (CipherFields, error) {

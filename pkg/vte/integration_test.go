@@ -61,8 +61,9 @@ func TestGenerateVTERealEncryption(t *testing.T) {
 		Round:          round,
 		ChainHash:      network.ChainHash,
 		FormatID:       "tlock_v1_age_pairing",
+		SessionID:      "test-session-123",
 		R2:             PlaintextToR2("test secret"),
-		CtxHash:        make([]byte, 32),
+		RefundTx:       make([]byte, 32), // Mock refund tx
 		DrandEndpoints: []string{"https://api.drand.sh"},
 	}
 

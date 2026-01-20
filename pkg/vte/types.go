@@ -1,76 +1,83 @@
 package vte
 
 import (
-	"bytes"
 	"errors"
-	"fmt"
 )
 
-// NetworkID defines the strict network parameters for verification.
-type NetworkID struct {
-	ChainHash          []byte   `json:"chain_hash"`
-	TlockVersion       string   `json:"tlock_version"`
-	CiphertextFormatID string   `json:"ciphertext_format_id"`
-	TrustChainHash     bool     `json:"trust_chain_hash"`
-	DrandEndpoints     []string `json:"drand_endpoints"`
+// VTEPackageV2 represents the v0.2 schema
+type VTEPackageV2 struct {
+	Version string      `json:"version"` // "vte-tlock/0.2"
+	Tlock   TlockInfo   `json:"tlock"`
+	Context ContextInfo `json:"context"`
+	Public  PublicInfo  `json:"public"`
+	Proofs  ProofsInfo  `json:"proofs"`
+	Meta    MetaInfo    `json:"meta,omitempty"`
 }
 
-// VTEPackage is the transferrable verification package.
-type VTEPackage struct {
-	Round           uint64         `json:"round"`
-	NetworkID       NetworkID      `json:"network_id"`
-	Capsule         []byte         `json:"capsule"`
-	CapsuleChecksum []byte         `json:"capsule_checksum"` // BLAKE3(Capsule)
-	CipherFields    CipherFields   `json:"cipher_fields"`    // Parsed fields bindable to proof
-	CtxHash         []byte         `json:"ctx_hash"`         // [32]byte, JSON Base64
-	C               []byte         `json:"c"`                // [32]byte, JSON Base64
-	R2Compressed    []byte         `json:"r2_compressed"`    // [33]byte, JSON Base64
-	R2Pub           R2PublicInputs `json:"r2_pub"`
-	ProofSECP       []byte         `json:"proof_secp"`
-	ProofTLE        []byte         `json:"proof_tle"`
+type TlockInfo struct {
+	DrandChainHash     []byte `json:"drand_chain_hash"` // Hex or Base64
+	Round              uint64 `json:"round"`
+	CiphertextFormatID string `json:"ciphertext_format_id"` // "tlock_v1_age_pairing"
+	Capsule            []byte `json:"capsule"`              // The actual ciphertext
+	CapsuleHash        []byte `json:"capsule_hash"`         // SHA256(Capsule)
 }
 
-// R2PublicInputs holds the limbs for the SECP proof.
-type R2PublicInputs struct {
-	R2x [2][16]byte `json:"r2x"` // 2 limbs of 16 bytes (uint128)
-	R2y [2][16]byte `json:"r2y"`
+type ContextInfo struct {
+	Schema      string   `json:"schema"` // "ctx_v2"
+	Fields      []string `json:"fields"` // ["drand_chain_hash", "round", "capsule_hash", "session_id", "refund_tx_hex"]
+	SessionID   string   `json:"session_id,omitempty"`
+	RefundTxHex string   `json:"refund_tx_hex,omitempty"`
+	CtxHash     []byte   `json:"ctx_hash"` // The binding hash
 }
 
-// CipherFields represents the parsed components of the ciphertext.
-// This structure depends on CiphertextFormatID.
-type CipherFields struct {
-	// For "tlock_v1_age_pairing"
-	EphemeralPubKey []byte `json:"ephemeral_pub_key"` // Compressed or uncompressed point
-	Mask            []byte `json:"mask"`
-	Tag             []byte `json:"tag"`
-	Ciphertext      []byte `json:"ciphertext"`
+type PublicInfo struct {
+	R2         R2Info `json:"r2"`
+	Commitment []byte `json:"commitment"` // MiMC(R2, CtxHash)
+}
+
+type R2Info struct {
+	Format string `json:"format"` // "sec1_compressed_hex"
+	Value  []byte `json:"value"`  // 33-byte compressed point
+}
+
+type ProofsInfo struct {
+	Commitment  CommitmentProofInfo `json:"commitment"`
+	SecpSchnorr SecpSchnorrInfo     `json:"secp_schnorr"`
+	TLE         TLEProofInfo        `json:"tle"`
+}
+
+type CommitmentProofInfo struct {
+	System       string                 `json:"system"`     // "groth16_bn254"
+	CircuitID    string                 `json:"circuit_id"` // Verification Key Hash
+	VkHash       string                 `json:"vk_hash"`    // redundant but explicit
+	PublicInputs CommitmentPublicInputs `json:"public_inputs"`
+	ProofB64     []byte                 `json:"proof_b64"`
+}
+
+type CommitmentPublicInputs struct {
+	CtxHash    []byte `json:"ctx_hash"`
+	Commitment []byte `json:"commitment"`
+}
+
+type SecpSchnorrInfo struct {
+	Scheme       string   `json:"scheme"`      // "schnorr_fs_v1"
+	BindFields   []string `json:"bind_fields"` // ["R2", "commitment", "ctx_hash", "capsule_hash"]
+	SignatureB64 []byte   `json:"signature_b64"`
+}
+
+type TLEProofInfo struct {
+	Status   string `json:"status"` // "not_implemented" | "implemented"
+	ProofB64 []byte `json:"proof_b64,omitempty"`
+}
+
+type MetaInfo struct {
+	UnlockTimeUTC string `json:"unlock_time_utc,omitempty"`
 }
 
 // Validation errors
 var (
-	ErrNetworkMismatch = errors.New("network ID mismatch")
+	ErrVersionMismatch = errors.New("version mismatch")
+	ErrNetworkMismatch = errors.New("network/chain ID mismatch")
 	ErrRoundMismatch   = errors.New("round mismatch")
-	ErrFormatMismatch  = errors.New("ciphertext format ID mismatch")
-	ErrTrustChainHash  = errors.New("TrustChainHash must be false in v0.2.1")
+	ErrCtxHashMismatch = errors.New("context hash mismatch")
 )
-
-// Validate checks the VTEPackage against expected parameters (Network Verification Phase).
-func (n NetworkID) Validate(expectedChainHash []byte, expectedFormatID string) error {
-	if n.TrustChainHash {
-		return ErrTrustChainHash
-	}
-	if !bytes.Equal(n.ChainHash, expectedChainHash) {
-		return fmt.Errorf("%w: have %x, want %x", ErrNetworkMismatch, n.ChainHash, expectedChainHash)
-	}
-	if n.CiphertextFormatID != expectedFormatID {
-		return fmt.Errorf("%w: have %s, want %s", ErrFormatMismatch, n.CiphertextFormatID, expectedFormatID)
-	}
-	return nil
-}
-
-func (p *VTEPackage) ValidateHeader(expectedRound uint64) error {
-	if p.Round != expectedRound {
-		return fmt.Errorf("%w: have %d, want %d", ErrRoundMismatch, p.Round, expectedRound)
-	}
-	return nil
-}

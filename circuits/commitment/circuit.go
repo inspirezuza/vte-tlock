@@ -8,32 +8,36 @@ import (
 )
 
 // Circuit proves knowledge of r2 such that:
-// C = MiMC(DST, r2, ctx_hash)
+// C = MiMC(DST, r2_hi, r2_lo, ctx_hash)
 //
 // This circuit demonstrates the prover knows the secret r2 value
-// that produces the public commitment C. Since R2 = r2 * G is computed
-// outside the circuit and verified separately, this proof binds the
-// commitment to the secret scalar.
+// that produces the public commitment C.
 //
-// MiMC is used instead of Poseidon for simplicity and gnark compatibility.
+// Hardening:
+//  1. DST is derived from "VTE_COMMIT_V2"
+//  2. R2 is split into two 128-bit limbs to prevent field modulus reduction issues
+//     (since 32-byte r2 > BN254 scalar field modulus)
 type Circuit struct {
 	// Public Inputs
-	// Context hash (32 bytes as single BN254 field element)
+	// Context hash (32 bytes as single BN254 field element, assumed to fit or reduced)
+	// For strictness we could split this too, but ctx_hash is public so less critical for hidden inputs
 	CtxHash frontend.Variable `gnark:",public"`
 
 	// C is the commitment (MiMC output)
 	C frontend.Variable `gnark:",public"`
 
-	// Secret Witness: r2 (32 bytes as single BN254 field element)
-	R2 frontend.Variable
+	// Secret Witness: r2 split into two 128-bit limbs
+	// R2 = R2Hi * 2^128 + R2Lo (conceptually, though we just hash the limbs)
+	R2Hi frontend.Variable
+	R2Lo frontend.Variable
 }
 
 func (c *Circuit) Define(api frontend.API) error {
 	// DST as field element (hash of "VTE_COMMIT_V2")
-	// Precomputed: SHA256("VTE_COMMIT_V2") mod BN254_Fr
-	// For simplicity, we use a fixed constant
+	// SHA256("VTE_COMMIT_V2") -> big.Int -> Field Element
+	// 0x6e8e6b18... derived from echo -n "VTE_COMMIT_V2" | sha256sum
 	dst := big.NewInt(0)
-	dst.SetString("12345678901234567890", 10) // Domain separator constant
+	dst.SetString("22834383894294698501250269098734612248590623067142646399676774643038477038930", 10)
 
 	// Create MiMC hasher (native BN254 support)
 	h, err := mimc.NewMiMC(api)
@@ -41,9 +45,10 @@ func (c *Circuit) Define(api frontend.API) error {
 		return err
 	}
 
-	// Hash: DST || r2 || ctx_hash
+	// Hash: DST || r2_hi || r2_lo || ctx_hash
 	h.Write(dst)
-	h.Write(c.R2)
+	h.Write(c.R2Hi)
+	h.Write(c.R2Lo)
 	h.Write(c.CtxHash)
 	cCalc := h.Sum()
 

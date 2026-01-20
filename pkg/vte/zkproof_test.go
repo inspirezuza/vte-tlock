@@ -56,9 +56,13 @@ func TestZKProofBeforeDecrypt(t *testing.T) {
 
 	// 5. Create mock VTE package with proof
 	pkg := &VTEPackage{
-		CtxHash:   ctxHash,
-		C:         cBytes,
-		ProofSECP: proofResult.Proof,
+		CtxHash: ctxHash,
+		C:       cBytes,
+		ProofCommitment: &CommitmentProof{
+			System:    "groth16",
+			CircuitID: commitment.CircuitID,
+			Proof:     proofResult.Proof,
+		},
 	}
 
 	// 6. Verify proof BEFORE timelock expires!
@@ -78,11 +82,11 @@ func TestZKProofBeforeDecrypt(t *testing.T) {
 
 // TestVerifyCommitmentProofMalformed tests that invalid proofs are rejected
 func TestVerifyCommitmentProofMalformed(t *testing.T) {
-	// Test with empty proof
+	// Test with nil proof
 	pkg := &VTEPackage{
-		CtxHash:   make([]byte, 32),
-		C:         make([]byte, 32),
-		ProofSECP: []byte{}, // Empty
+		CtxHash:         make([]byte, 32),
+		C:               make([]byte, 32),
+		ProofCommitment: nil, // Empty
 	}
 
 	err := VerifyCommitmentProof(pkg)

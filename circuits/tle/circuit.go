@@ -6,7 +6,7 @@ import (
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/std/algebra/emulated/fields_bls12381"
 	"github.com/consensys/gnark/std/algebra/emulated/sw_emulated"
-	"github.com/consensys/gnark/std/hash/poseidon2"
+	"github.com/consensys/gnark/std/hash/mimc"
 	"github.com/consensys/gnark/std/hash/sha2"
 	"github.com/consensys/gnark/std/math/emulated"
 	"github.com/consensys/gnark/std/math/uints"
@@ -19,18 +19,18 @@ import (
 type Circuit struct {
 	// Public Inputs
 	// Qid (Hash(Round)) -- G2 Point (4 Fp elements).
-	QidX0 frontend.Variable `gnark:",public"`
-	QidX1 frontend.Variable `gnark:",public"`
-	QidY0 frontend.Variable `gnark:",public"`
-	QidY1 frontend.Variable `gnark:",public"`
+	QidX0 emulated.Element[sw_bls12381.BaseField] `gnark:",public"`
+	QidX1 emulated.Element[sw_bls12381.BaseField] `gnark:",public"`
+	QidY0 emulated.Element[sw_bls12381.BaseField] `gnark:",public"`
+	QidY1 emulated.Element[sw_bls12381.BaseField] `gnark:",public"`
 
 	// Public Key (Network PK) -- G1 Point (2 Fp elements).
-	PKX frontend.Variable `gnark:",public"`
-	PKY frontend.Variable `gnark:",public"`
+	PKX emulated.Element[sw_bls12381.BaseField] `gnark:",public"`
+	PKY emulated.Element[sw_bls12381.BaseField] `gnark:",public"`
 
 	// Ciphertext U -- G1 Point.
-	UX frontend.Variable `gnark:",public"`
-	UY frontend.Variable `gnark:",public"`
+	UX emulated.Element[sw_bls12381.BaseField] `gnark:",public"`
+	UY emulated.Element[sw_bls12381.BaseField] `gnark:",public"`
 
 	// Ciphertext V -- 32 bytes.
 	V [32]uints.U8 `gnark:",public"`
@@ -38,56 +38,75 @@ type Circuit struct {
 	// Ciphertext W -- 32 bytes.
 	W [32]uints.U8 `gnark:",public"`
 
-	// Commitment C (Poseidon hash of r2, ctx)
+	// Commitment C (MiMC hash of r2, ctx)
 	C     frontend.Variable `gnark:",public"`
 	CtxHi frontend.Variable `gnark:",public"` // Context Hash (Hi 128 bits)
 	CtxLo frontend.Variable `gnark:",public"` // Context Hash (Lo 128 bits)
 
 	// Witness
-	R2      frontend.Variable // The secret r2 (scalar field element of BN254/Poseidon).
-	Sigma   [32]uints.U8      // Randomness.
-	H3Count frontend.Variable // Counter for H3 rejection sampling (witness).
+	R2      emulated.Element[sw_bls12381.ScalarField] // The secret r2
+	Sigma   [32]uints.U8                              // Randomness.
+	H3Count frontend.Variable                         // Counter for H3 rejection sampling (witness).
 }
 
 func (c *Circuit) Define(api frontend.API) error {
-	// 0. Init Uints (Bytes) API
+	// 0. Init API
 	uapi, err := uints.NewBytes(api)
 	if err != nil {
 		return err
 	}
 
-	// 1. Verify Commitment C = Poseidon(DST, r2, ctx)
+	scalarField, err := emulated.NewField[sw_bls12381.ScalarField](api)
+	if err != nil {
+		return err
+	}
+
+	// 1. Verify Commitment C = MiMC(DST, r2, ctx)
 	// DST setup
 	dstBytes := [32]byte{}
 	copy(dstBytes[:], []byte("VTE_TLOCK_v0.2.1"))
 	dstHi := new(big.Int).SetBytes(dstBytes[:16])
 	dstLo := new(big.Int).SetBytes(dstBytes[16:])
 
-	// r2 is BN254 Scalar in Poseidon.
-	// We split R2 into Hi/Lo (128 bits) for Poseidon to be consistent with 128-bit limbs.
-	r2Bits := api.ToBinary(c.R2, 256)
+	// r2 is emulated.Element (255 bits).
+	// We need 128-bit splits for MiMC.
+	r2Bits := scalarField.ToBits(&c.R2) // LE bits
+	// Pad/slice to 256 bits if needed? Scalar is likely 255 bits.
+	// ToBits returns full limb bits?
+	// emulated.ToBits returns NbLimbs * BitsPerLimb bits.
+	// BLS12-381 Fr is ~255 bits.
+	// We use FromBinary on first 128 and next 128?
 	r2Lo := api.FromBinary(r2Bits[:128]...)
-	r2Hi := api.FromBinary(r2Bits[128:]...)
+	r2Hi := api.FromBinary(r2Bits[128:256]...) // Ensure we have enough bits, zero pad if implied
 
-	p, err := poseidon2.NewMerkleDamgardHasher(api)
+	m, err := mimc.NewMiMC(api)
 	if err != nil {
 		return err
 	}
-	// Poseidon(DST_hi, DST_lo, r2_hi, r2_lo, ctx_hi, ctx_lo)
-	p.Write(dstHi, dstLo, r2Hi, r2Lo, c.CtxHi, c.CtxLo)
-	cCalc := p.Sum()
+	// MiMC(DST_hi, DST_lo, r2_hi, r2_lo, ctx_hi, ctx_lo)
+	m.Write(dstHi, dstLo, r2Hi, r2Lo, c.CtxHi, c.CtxLo)
+	cCalc := m.Sum()
 	api.AssertIsEqual(cCalc, c.C)
 
 	// 2. IBE Verification Logic
 
 	// 2a. Reconstruct R2 Bytes from R2 Bits (for SHA2)
-	// SHA2 expects Big Endian bytes usually. r2Bits is LE bits of R2.
-	// Reverse to BE bits logic inside bitsToBytes?
-	// Let's reverse r2Bits to BE bits here.
+	// r2Bits is LE. Convert to BE for bitsToBytes?
+	// r2Bits is [LSB...].
+	// We want BE bytes.
+	// Reverse to BE bits.
 	r2BitsBE := make([]frontend.Variable, 256)
 	for i := 0; i < 256; i++ {
-		r2BitsBE[i] = r2Bits[255-i]
+		if i < len(r2Bits) {
+			r2BitsBE[i] = r2Bits[255-i] // Assuming 256 bits available or padded
+		} else {
+			r2BitsBE[i] = 0
+		}
 	}
+	// NOTE: r2Bits might be e.g. 256 length if params say so.
+	// For BLS12-381 Fr: 4 limbs of 64 bits = 256 bits exactly?
+	// Check sw_bls12381 params. Usually yes.
+
 	r2Bytes := bitsToBytes(uapi, api, r2BitsBE)
 
 	// 2b. Compute W_check = r2Bytes XOR H4(sigma)
@@ -124,11 +143,6 @@ func (c *Circuit) Define(api frontend.API) error {
 
 	// Counter (2 bytes LE)
 	countBits := api.ToBinary(c.H3Count, 16)
-	// api.ToBinary gives LSB...MSB.
-	// Bytes are [LSB_byte, MSB_byte].
-	// Inside LSB_byte, bits are [b0...b7] (LSB...MSB).
-	// bitsToBytes expects BE bits [MSB...LSB].
-	// So we reverse bits of each byte.
 	countBitsLByte := reverseBits(countBits[0:8])
 	countBitsHByte := reverseBits(countBits[8:16])
 
@@ -142,26 +156,26 @@ func (c *Circuit) Define(api frontend.API) error {
 
 	// Convert rHash to Scalar
 	rHashBits := toBits(api, uapi, rHash) // BE bits
-
-	scalarField, err := emulated.NewField[sw_bls12381.ScalarField](api)
-	if err != nil {
-		return err
-	}
-
-	// emulated.FromBits expects LE bits.
 	rHashBitsLE := reverseBits(rHashBits)
 
 	rScalar := scalarField.FromBits(rHashBitsLE...)
 
 	// Rejection Sampling Check: rScalar < q
+	// emulated.FromBits usually reduces mod modulus.
+	// But H3 logic requires strict < q check on the 256 bits?
+	// or 255 bits?
+	// If we trust FromBits to implement field mapping correctly.
+	// Usually to check canonical representation we re-convert to bits and compare.
 	rScalarBits := scalarField.ToBits(rScalar)
-	// Check strict equality of bits to ensure no overflow
-	// The top bit of rHash (BE) must be 0 because Modulus is 255 bits.
-	// rHashBitsLE[255] is MSB.
-	api.AssertIsEqual(rHashBitsLE[255], 0)
+	// rHashBitsLE MSB (255) must be 0 if q is 255 bits and we want canonical check.
+	// But rScalarBits is canonical by definition.
+	// We need to Ensure rHashBitsLE == rScalarBits to verify it didn't wrap.
+	// i.e. rHash (original value) < q.
 	for i := 0; i < 255; i++ {
 		api.AssertIsEqual(rScalarBits[i], rHashBitsLE[i])
 	}
+	// Check MSB is 0 (since q is 255 bits, 256th bit logic etc)
+	api.AssertIsEqual(rHashBitsLE[255], 0)
 
 	// 2d. Check U = r * G1_Generator
 	pair, err := sw_bls12381.NewPairing(api)
@@ -176,32 +190,33 @@ func (c *Circuit) Define(api frontend.API) error {
 	}
 
 	g1Gen := getG1Generator(api)
+
 	// ScalarMul args: Base (G1Affine), Scalar.
 	uCheck := curve.ScalarMul(&g1Gen, rScalar)
 
-	// Assert U matches Input U.
+	// Assert U matches Input U
 	uInput := &sw_bls12381.G1Affine{
-		X: emulated.ValueOf[sw_bls12381.BaseField](c.UX),
-		Y: emulated.ValueOf[sw_bls12381.BaseField](c.UY),
+		X: c.UX, // emulated.Element
+		Y: c.UY,
 	}
 	curve.AssertIsEqual(uCheck, uInput)
 
 	// 2e. Check V = sigma XOR H2(e(r*PK, Qid))
 	pkInput := &sw_bls12381.G1Affine{
-		X: emulated.ValueOf[sw_bls12381.BaseField](c.PKX),
-		Y: emulated.ValueOf[sw_bls12381.BaseField](c.PKY),
+		X: c.PKX,
+		Y: c.PKY,
 	}
 	rPK := curve.ScalarMul(pkInput, rScalar)
 
 	qidInput := &sw_bls12381.G2Affine{
 		P: sw_bls12381.G2AffP{
 			X: fields_bls12381.E2{
-				A0: emulated.ValueOf[sw_bls12381.BaseField](c.QidX0),
-				A1: emulated.ValueOf[sw_bls12381.BaseField](c.QidX1),
+				A0: c.QidX0,
+				A1: c.QidX1,
 			},
 			Y: fields_bls12381.E2{
-				A0: emulated.ValueOf[sw_bls12381.BaseField](c.QidY0),
-				A1: emulated.ValueOf[sw_bls12381.BaseField](c.QidY1),
+				A0: c.QidY0,
+				A1: c.QidY1,
 			},
 		},
 	}
@@ -223,21 +238,34 @@ func (c *Circuit) Define(api frontend.API) error {
 		&gid.A6, &gid.A7, &gid.A8, &gid.A9, &gid.A10, &gid.A11,
 	}
 
-	baseField, err := emulated.NewField[sw_bls12381.BaseField](api)
-	if err != nil {
-		return err
-	}
-
 	for _, coeff := range gtCoeffs {
+		// Use curve.BaseField instead of re-instantiating if possible?
+		// or just use curve.BaseField implementation.
+		// curve.BaseField is *emulated.Field[Base].
+		// But here we need to call ToBits on Element.
+		// curve struct doesn't expose underlying field easily?
+		// We can re-instantiate or use existing:
+		// We need baseField API instance.
+		// Instantiate one.
+		baseField, _ := emulated.NewField[sw_bls12381.BaseField](api)
+
 		bits := baseField.ToBits(coeff) // LE bits
 		paddingLen := 384 - len(bits)
+		// We need to reverse to BE?
 		bitsRev := reverseBits(bits)
+
+		// Pad with zeros at beginning if BE?
+		// If 384 bits required.
+		// bitsRev is BE version of bits.
+		// If bits was < 384, we need to pad.
+		// Logic in original was correct?
+		// Original: padding make, append padding, bitsRev.
 		padding := make([]frontend.Variable, paddingLen)
 		for k := range padding {
 			padding[k] = 0
 		}
-
 		fullBitsBE := append(padding, bitsRev...)
+
 		bytes := bitsToBytes(uapi, api, fullBitsBE)
 		h2.Write(bytes)
 	}

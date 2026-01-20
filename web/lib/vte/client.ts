@@ -27,12 +27,27 @@ class VTEClient {
         this.handlers.delete(id);
     }
 
-    private send(type: string, payload: any): Promise<any> {
+    private send(type: string, payload: any, timeoutMs: number = 60000): Promise<any> {
         if (!this.worker) return Promise.reject(new Error("Worker not available"));
         
         const id = (this.idCounter++).toString();
         return new Promise((resolve, reject) => {
-            this.handlers.set(id, { resolve, reject });
+            // Set up timeout
+            const timeout = setTimeout(() => {
+                this.handlers.delete(id);
+                reject(new Error(`Worker request timeout after ${timeoutMs/1000}s for ${type}`));
+            }, timeoutMs);
+            
+            this.handlers.set(id, { 
+                resolve: (val) => {
+                    clearTimeout(timeout);
+                    resolve(val);
+                },
+                reject: (err) => {
+                    clearTimeout(timeout);
+                    reject(err);
+                }
+            });
             this.worker!.postMessage({ id, type, payload });
         });
     }
@@ -48,19 +63,21 @@ class VTEClient {
         chainHash: string;
         formatId: string;
         r2: string;
-        ctxHash: string;
+        refundTxHex: string;
+        sessionId: string;
         endpoints: string[];
+        // canonicalEndpoints removed in V2
         strategy: 'gnark' | 'zkvm' | 'auto';
     }) {
         return this.send('GENERATE_VTE', params);
     }
 
-    async computeCtxHash(sessionId: string, refundTx: string) {
-        return this.send('COMPUTE_CTX_HASH', { sessionId, refundTx });
+    async computeCtxHash(sessionId: string, refundTx: string, chainHash: string, round: number, capsuleHash: string) {
+        return this.send('COMPUTE_CTX_HASH', { sessionId, refundTx, chainHash, round, capsuleHash });
     }
 
-    async decrypt(packageJSON: string) {
-        return this.send('DECRYPT_VTE', { packageJSON });
+    async decrypt(packageJSON: string, endpoints: string[]) {
+        return this.send('DECRYPT_VTE', { packageJSON, endpoints });
     }
 
     async verifyVTE(params: {
@@ -68,13 +85,18 @@ class VTEClient {
         round: number;
         chainHash: string;
         formatId: string;
-        ctxHash: string;
+        sessionId: string;
+        refundTxHex: string;
     }) {
         return this.send('VERIFY_VTE', params);
     }
 
     async parseCapsule(capsule: string, formatId: string) {
         return this.send('PARSE_CAPSULE', { capsule, formatId });
+    }
+
+    async computeR2Point(r2Hex: string): Promise<{ R2?: string; error?: string }> {
+        return this.send('COMPUTE_R2_POINT', { r2Hex });
     }
 }
 

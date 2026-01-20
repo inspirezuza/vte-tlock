@@ -4,11 +4,13 @@ import (
 	"math/big"
 	"testing"
 	"time"
+	"vte-tlock/circuits/lib/sw_bls12381"
 
 	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark/backend/groth16"
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/frontend/cs/r1cs"
+	"github.com/consensys/gnark/std/math/emulated"
 	"github.com/consensys/gnark/std/math/uints"
 	"github.com/consensys/gnark/test"
 )
@@ -129,7 +131,7 @@ func createMockWitness(tb testing.TB) Circuit {
 		w[i] = uints.NewU8(uint8(i + 64))
 	}
 
-	// Mock public inputs (these would come from actual IBE encryption)
+	// Mock public inputs (converted to emulated elements)
 	// Qid (G2 point on BLS12-381)
 	qidX0 := big.NewInt(1)
 	qidX1 := big.NewInt(2)
@@ -155,20 +157,20 @@ func createMockWitness(tb testing.TB) Circuit {
 	h3Count := big.NewInt(0)
 
 	return Circuit{
-		QidX0:   qidX0,
-		QidX1:   qidX1,
-		QidY0:   qidY0,
-		QidY1:   qidY1,
-		PKX:     pkX,
-		PKY:     pkY,
-		UX:      uX,
-		UY:      uY,
+		QidX0:   emulated.ValueOf[sw_bls12381.BaseField](qidX0),
+		QidX1:   emulated.ValueOf[sw_bls12381.BaseField](qidX1),
+		QidY0:   emulated.ValueOf[sw_bls12381.BaseField](qidY0),
+		QidY1:   emulated.ValueOf[sw_bls12381.BaseField](qidY1),
+		PKX:     emulated.ValueOf[sw_bls12381.BaseField](pkX),
+		PKY:     emulated.ValueOf[sw_bls12381.BaseField](pkY),
+		UX:      emulated.ValueOf[sw_bls12381.BaseField](uX),
+		UY:      emulated.ValueOf[sw_bls12381.BaseField](uY),
 		V:       v,
 		W:       w,
-		C:       c,
+		C:       c, // frontend.Variable (implicit conversion from big.Int handled by witness assignment)
 		CtxHi:   ctxHi,
 		CtxLo:   ctxLo,
-		R2:      r2,
+		R2:      emulated.ValueOf[sw_bls12381.ScalarField](r2),
 		Sigma:   sigma,
 		H3Count: h3Count,
 	}
